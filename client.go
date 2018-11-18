@@ -10,12 +10,16 @@ import (
 
 const UDP_BUFFER = 64 * 1024
 
+var bufferPool = sync.Pool{New: func() interface{} {
+	return make([]byte, UDP_BUFFER)
+}}
+
 var tcpClientMapper sync.Map
 
 type tcpClientTunnel struct {
 	key          string
 	conn         net.Conn
-	sendBuffer   []byte
+	//sendBuffer   []byte
 	recvBuffer   []byte
 	sendBuffChan chan []byte
 }
@@ -51,12 +55,12 @@ func StartClient(listen string, server string, timeOut time.Duration) (err error
 		} else {
 			tcpTunnel = &tcpClientTunnel{
 				key : key,
-				sendBuffer: make([]byte, UDP_BUFFER),
+				//sendBuffer: make([]byte, UDP_BUFFER),
 				recvBuffer: make([]byte, UDP_BUFFER),
-				sendBuffChan:make(chan []byte, 1),
+				sendBuffChan:make(chan []byte, 0),
 			}
 			tcpClientMapper.Store(key, tcpTunnel)
-			go func(key string) {
+			go func() {
 				conn, err := net.DialTimeout("tcp", server, time.Second * 3)
 				if err != nil {
 					tcpTunnel.destroy(err)
@@ -75,6 +79,7 @@ func StartClient(listen string, server string, timeOut time.Duration) (err error
 							tcpTunnel.destroy(err)
 							return
 						}
+						log.Println(key, "send", len(buff))
 					}
 				}()
 				go func() {
@@ -90,15 +95,13 @@ func StartClient(listen string, server string, timeOut time.Duration) (err error
 						relayClient.WriteTo(tcpTunnel.recvBuffer[:n], cAddr)
 					}
 				}()
-			}(key)
+			}()
 		}
-		//go func(tcpBuffLen int) {
-		if len(tcpTunnel.sendBuffChan) == 0 {
-			copy(tcpTunnel.sendBuffer, buff[:n])
-			tcpTunnel.sendBuffChan <- tcpTunnel.sendBuffer[:n]
-		} else {
-			//log.Println("sendBuffChan is full", len(tcpTunnel.sendBuffChan))
-		}
-		//}(n)
+		sendBuffer := bufferPool.Get().([]byte)
+		copy(sendBuffer, buff[:n])
+		go func() {
+			tcpTunnel.sendBuffChan <- sendBuffer[:n]
+			bufferPool.Put(sendBuffer)
+		}()
 	}
 }
